@@ -1,6 +1,6 @@
 # Flapping Wing Agent
 
-基于 PPO 强化学习的双翼扑翼运动优化程序。程序可以使用内置准定常气动力模型运行，也可以通过 ZeroMQ 与 `LBM_Mutiwing` CFD 程序在线耦合，由 CFD 返回每个控制步的运动状态和气动力。
+基于 PPO 强化学习的双翼扑翼运动优化程序。程序通过 ZeroMQ 与 `LBM_Mutiwing` CFD 程序在线耦合，由 CFD 返回每个控制步的运动状态和气动力。
 
 ## 目录结构
 
@@ -14,39 +14,25 @@ flapping_wing_agent/
 │   └── reward.py            # 奖励函数
 ├── physics/
 │   ├── aerodynamics.py      # 气动力接口与数据记录
-│   ├── kinematics.py        # 准定常模式下的运动学模型
 │   └── lbm_client.py        # ZeroMQ REQ 客户端
 └── visualization/plotter.py # 训练曲线、回合图像输出
 ```
 
-## 运行模式
+## CFD 在线耦合模式
 
-### CFD 在线耦合模式
-
-默认配置为 CFD 在线耦合模式：
+程序仅支持 CFD 在线耦合模式：
 
 ```python
 ENV_CONFIG = {
-    'use_cfd': True,
     'cfd_zmq': {
         'host': '127.0.0.1',
         'port': 5555,
-        'wing_count': 2,
+        'wing_count': 2,  # 1=单翼，2=双翼；需与 CFD 服务端一致
     },
 }
 ```
 
 Python 程序作为 ZeroMQ `REQ` 客户端，连接 `LBM_Mutiwing` 的 `REP` 服务端。每个 episode 会先发送 `RESET 0`，之后按控制周期发送 `STEP`，并在结束时发送 `STOP`。
-
-### 准定常模式
-
-如果不使用 CFD，需要在 `config/config.py` 中改为：
-
-```python
-'use_cfd': False
-```
-
-然后直接运行 `python main.py` 即可。
 
 ## Python 依赖
 
@@ -71,6 +57,7 @@ python main.py
 ```bash
 python main.py \
   --dof_mode 2dof \
+  --wing_count 2 \
   --episodes 700 \
   --device cpu \
   --cfd_host 127.0.0.1 \
@@ -81,6 +68,7 @@ python main.py \
 
 ```text
 --dof_mode     自由度模式，可选 1dof、2dof、3dof
+--wing_count   翼数量，可选 1 或 2；必须与 CFD 服务端配置一致
 --episodes     训练回合数
 --device       运行设备，可选 auto、cpu、cuda
 --load_model   加载已有模型参数
@@ -105,7 +93,7 @@ mpirun -np 1 ./exe
 
 ```bash
 cd ../flapping_wing_agent
-python main.py --dof_mode 2dof --episodes 700 --device cpu --cfd_host 127.0.0.1 --cfd_port 5555
+python main.py --dof_mode 2dof --wing_count 2 --episodes 700 --device cpu --cfd_host 127.0.0.1 --cfd_port 5555
 ```
 
 也可以用一个脚本先在后台启动 CFD，再等待端口就绪后启动训练：
@@ -138,6 +126,7 @@ cd ../flapping_wing_agent
 
 python main.py \
   --dof_mode 2dof \
+  --wing_count 2 \
   --episodes 700 \
   --device cpu \
   --cfd_host 127.0.0.1 \
@@ -215,7 +204,7 @@ PHYSICS_CONFIG['simulation_time']       每个 episode 的总物理时间
 PHYSICS_CONFIG['max_velocity_increment']动作映射后的最大速度增量
 TRAINING_CONFIG['num_episodes']         默认训练回合数
 ENV_CONFIG['dof_mode']                  默认自由度模式
-ENV_CONFIG['use_cfd']                   是否使用在线 CFD
+ENV_CONFIG['cfd_zmq']['wing_count']     默认翼数量，1=单翼，2=双翼
 ENV_CONFIG['cfd_zmq']['warmup_time']    每个 episode RESET 后的 CFD 预推进时间
 ```
 
@@ -225,7 +214,7 @@ Python 客户端发送：
 
 ```text
 RESET 0
-STEP <target_time> <w1_domega> <w1_dsau> <w1_dsbv> <w2_domega> <w2_dsau> <w2_dsbv>
+STEP <target_time> <每翼依次重复: domega dsau dsbv>
 SAVE
 STOP
 ```

@@ -24,18 +24,14 @@ class RewardFunction:
         self.beta_y = PHYSICS_CONFIG['heave_penalty_weight']     # 升沉位移惩罚权重
         self.beta_x = PHYSICS_CONFIG['inline_penalty_weight']    # 轴向位移惩罚权重
 
-    def calculate_reward(self, thrust_efficiency: float, motion_params: Dict[str, dict],
-                        action: np.ndarray, stab) -> float:
+    def calculate_reward(self, thrust: float, motion_params: Dict[str, dict],
+                        action: np.ndarray) -> float:
         """
         计算当前状态和动作的奖励
 
         参数:
-            thrust_coefficient: 当前总推力系数 C_t（前后翼之和）
-            motion_params: 运动参数字典，包含前后翼各自的参数
-                {
-                    'wing1': {'pitch': float, 'heave': float, 'inline': float},
-                    'wing2': {'pitch': float, 'heave': float, 'inline': float}
-                }
+            thrust_coefficient: 当前总推力系数 C_t（全部翼之和）
+            motion_params: 运动参数字典，包含每个翼各自的参数
             action: 执行的动作
 
         返回:
@@ -50,42 +46,42 @@ class RewardFunction:
         #     thrust_reward = thrust_coefficient
 
         # 1. 推力效率奖励：最大化推力效率
-        efficiency_reward = thrust_efficiency
+        efficiency_reward = thrust
 
         # 2. 稳定性惩罚
-        stable_penalty = stab
+
 
         # 2. 运动惩罚（分别计算前后翼的惩罚）
         penalty = 0.0
 
         # 对每个翼单独计算惩罚
-        for wing_params in [motion_params['wing1'], motion_params['wing2']]:
+        for wing_params in motion_params.values():
             # 2.1 俯仰角惩罚
             if 'pitch' in wing_params:
                 pitch_angle = abs(wing_params['pitch'])
                 if pitch_angle >= self.max_pitch:
-                    penalty -= 1000  # 超出最大角度的强惩罚
+                    penalty -= 55  # 超出最大角度的强惩罚
                 elif pitch_angle > self.pitch_penalty_threshold:
-                    penalty -= 0.4 * pitch_angle ** 7
+                    penalty -= 3 * pitch_angle ** 7
 
             # 2.2 升沉位移惩罚
             if 'heave' in wing_params:
                 heave_pos = abs(wing_params['heave'])
                 if heave_pos >= self.max_heave:
-                    penalty -= 1000  # 超出最大位移的强惩罚
+                    penalty -= 55  # 超出最大位移的强惩罚
                 elif heave_pos > self.heave_penalty_threshold:
                     penalty -= 0.01 * heave_pos ** 9
 
-            # 2.3 轴向位移惩罚（仅对共享的轴向运动计算一次）
-            if 'inline' in wing_params and wing_params is motion_params['wing1']:  # 只在处理前翼时计算一次
+            # 2.3 轴向位移惩罚
+            if 'inline' in wing_params:
                 inline_pos = abs(wing_params['inline'])
                 if inline_pos >= self.max_inline:
-                    penalty -= 1000  # 超出最大位移的强惩罚
+                    penalty -= 55  # 超出最大位移的强惩罚
                 elif inline_pos > self.inline_penalty_threshold:
                     penalty -= 0.01 * inline_pos ** 9
 
         # 3. 计算总奖励
-        total_reward = efficiency_reward + penalty - stable_penalty
+        total_reward = efficiency_reward + penalty
 
         return float(total_reward)
 
@@ -135,8 +131,8 @@ class RewardFunction:
                     wing_penalty -= 0.01 * heave_pos ** 9
                 info[f'{wing_id}_heave_penalty'] = float(wing_penalty)
 
-            # 2.3 轴向位移惩罚（仅对前翼计算）
-            if 'inline' in wing_params and wing_id == 'wing1':
+            # 2.3 轴向位移惩罚
+            if 'inline' in wing_params:
                 inline_pos = abs(wing_params['inline'])
                 if inline_pos >= self.max_inline:
                     wing_penalty -= 1000

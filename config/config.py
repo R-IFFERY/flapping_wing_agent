@@ -10,8 +10,8 @@ PHYSICS_CONFIG = {
     'fluid_density': 1.225,    # kg/m^3，流体密度
     'chord_length': 1.0,       # m，弦长
     # 'wing_span': 0.3,          # m，翼展
-    'max_angle': np.pi/2,      # rad，最大俯仰角
-    'max_displacement': 2.8,   # m，最大位移
+    'max_angle': 1.5,      # rad，最大俯仰角
+    'max_displacement': 2.6,   # m，最大位移
     # 'max_velocity': 2.0,      # m/s，最大速度
     'max_velocity_increment': 0.4,  # m/s，最大速度增量
     'dt': 0.1,               # s，时间步长
@@ -48,7 +48,6 @@ TRAINING_CONFIG = {
 # 环境参数
 ENV_CONFIG = {
     'dof_mode': '2dof',        # 自由度模式：1dof/2dof/3dof
-    'use_cfd': True,          # True: 使用ZeroMQ在线CFD；False: 使用准定常模型
     'reward_weights': {
         'thrust_coef': 1.0,    # 推力系数权重
         'stability': 0.5,      # 稳定性权重
@@ -59,7 +58,7 @@ ENV_CONFIG = {
     'cfd_zmq': {
         'host': '127.0.0.1',
         'port': 5555,
-        'wing_count': 2,
+        'wing_count': 2,       # 翼数量：1=单翼，2=双翼；需与 CFD 服务端一致
         'timeout_ms': 600000,
         # 每个回合 RESET 后先用零速度增量预推进的物理时间；不计入RL回合步数
         'warmup_time': 2.0,

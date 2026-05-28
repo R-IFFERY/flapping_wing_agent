@@ -9,8 +9,7 @@ from config.config import PHYSICS_CONFIG, ENV_CONFIG
 from physics.lbm_client import LBMClient
 
 class AerodynamicsModel:
-    def __init__(self, use_cfd=False, save_dir=None):
-        self.use_cfd = use_cfd
+    def __init__(self, save_dir=None):
         self.rou = PHYSICS_CONFIG['fluid_density']  # 流体密度
         self.c = PHYSICS_CONFIG['chord_length']    # 弦长
         self.U0 = PHYSICS_CONFIG['fluid_velocity'] # 来流速度
@@ -31,19 +30,15 @@ class AerodynamicsModel:
         self.pending_flow_save_reason = None
         self.pending_flow_save_retry_count = 0
         self.zmq_config = ENV_CONFIG.get('cfd_zmq', {})
+        self.wing_count = int(self.zmq_config.get('wing_count', 2))
         self.flow_save_config = self.zmq_config.get('flow_save', {})
 
-        if self.is_zmq:
-            self.client = LBMClient(
-                host=self.zmq_config.get('host', '127.0.0.1'),
-                port=self.zmq_config.get('port', 5555),
-                wing_count=self.zmq_config.get('wing_count', 2),
-                timeout_ms=self.zmq_config.get('timeout_ms', 600000),
-            )
-
-    @property
-    def is_zmq(self):
-        return self.use_cfd
+        self.client = LBMClient(
+            host=self.zmq_config.get('host', '127.0.0.1'),
+            port=self.zmq_config.get('port', 5555),
+            wing_count=self.wing_count,
+            timeout_ms=self.zmq_config.get('timeout_ms', 600000),
+        )
 
     def set_episode(self, episode):
         """设置当前回合号，同时保存上一回合数据"""
@@ -95,12 +90,6 @@ class AerodynamicsModel:
         except Exception as e:
             print(f"保存气动数据时发生错误: {e}")
 
-    def calculate_forces(self, state1, state2, sim_time):
-        """计算气动力和推力系数"""
-        if self.use_cfd:
-            raise RuntimeError("ZMQ CFD mode must call step_zmq(action, target_time, ...)")
-        return self._quasi_steady_solve(state1, state2, sim_time)
-
     def reset_zmq(self):
         """Reset the online CFD solver and return the initial FORCE response."""
         if not self.client:
@@ -149,90 +138,45 @@ class AerodynamicsModel:
         q = 0.5 * self.rou * self.U0 ** 2 * self.c
         p_den = 0.5 * self.rou * self.c * self.U0 ** 3
 
-        fx1 = wing_force[0]["fx_avg"]
-        fy1 = wing_force[0]["fy_avg"]
-        torque1 = wing_force[0]["m_avg"]
-        fx2 = wing_force[1]["fx_avg"]
-        fy2 = wing_force[1]["fy_avg"]
-        torque2 = wing_force[1]["m_avg"]
+        fxs = []
+        fys = []
+        torques = []
+        cts = []
+        cls = []
+        cps = []
+        powers = []
+        pfs = []
 
-        if q == 0:
-            Ct1 = Ct2 = Cl1 = Cl2 = 0.0
-        else:
-            Ct1 = fx1 / q
-            Ct2 = fx2 / q
-            Cl1 = fy1 / q
-            Cl2 = fy2 / q
+        for idx in range(self.wing_count):
+            fx = wing_force[idx]["fx_avg"]
+            fy = wing_force[idx]["fy_avg"]
+            torque = wing_force[idx]["m_avg"]
+            fxs.append(fx)
+            fys.append(fy)
+            torques.append(torque)
 
-        p1 = fx1 * motion[0]["sau"] + fy1 * motion[0]["sbv"] + torque1 * motion[0]["omega"]
-        p2 = fx2 * motion[1]["sau"] + fy2 * motion[1]["sbv"] + torque2 * motion[1]["omega"]
-        if p_den == 0:
-            Cp1 = Cp2 = 0.0
-        else:
-            Cp1 = max(min(p1 / p_den, 20.0), -20.0)
-            Cp2 = max(min(p2 / p_den, 20.0), -20.0)
+            if q == 0:
+                ct = cl = 0.0
+            else:
+                ct = fx / q
+                cl = fy / q
+            cts.append(ct)
+            cls.append(cl)
 
-        cp_sum = Cp1 + Cp2
-        Pf1 = 0.0 if Cp1 == 0 else Ct1 / Cp1
-        Pf2 = 0.0 if Cp2 == 0 else Ct2 / Cp2
-        Pf = 0.0 if cp_sum == 0 else max(min((Ct1 + Ct2) / cp_sum, 20.0), -20.0)
+            power = fx * motion[idx]["sau"] + fy * motion[idx]["sbv"] + torque * motion[idx]["omega"]
+            powers.append(power)
+            cp = 0.0 if p_den == 0 else max(min(power / p_den, 20.0), -20.0)
+            cps.append(cp)
+            pfs.append(0.0 if cp == 0 else ct / cp)
+
+        Pf = float(sum(cts))
 
         data = {
             'cfd_time': response['time'],
-            'theta1': motion[0]['angle'],
-            'theta2': motion[1]['angle'],
-            'omega1': motion[0]['omega'],
-            'omega2': motion[1]['omega'],
-            'alpha1': motion[0]['omgac'],
-            'alpha2': motion[1]['omgac'],
-            'sa1': motion[0]['sa'],
-            'sa2': motion[1]['sa'],
-            'sau1': motion[0]['sau'],
-            'sau2': motion[1]['sau'],
-            'saac1': motion[0]['saac'],
-            'saac2': motion[1]['saac'],
-            'sb1': motion[0]['sb'],
-            'sb2': motion[1]['sb'],
-            'sbv1': motion[0]['sbv'],
-            'sbv2': motion[1]['sbv'],
-            'sbac1': motion[0]['sbac'],
-            'sbac2': motion[1]['sbac'],
-            'v_x1': motion[0]['sau'],
-            'v_x2': motion[1]['sau'],
-            'v_y1': motion[0]['sbv'],
-            'v_y2': motion[1]['sbv'],
-            'a_x1': motion[0]['saac'],
-            'a_x2': motion[1]['saac'],
-            'a_y1': motion[0]['sbac'],
-            'a_y2': motion[1]['sbac'],
-            'Fx1': fx1,
-            'Fx2': fx2,
-            'Fy1': fy1,
-            'Fy2': fy2,
-            'M1': torque1,
-            'M2': torque2,
             'total_Fx': total_force['fx_avg'],
             'total_Fy': total_force['fy_avg'],
             'total_M': total_force['m_avg'],
-            'T1': fx1,
-            'T2': fx2,
-            'Ct1': Ct1,
-            'Ct2': Ct2,
-            'P1': p1,
-            'P2': p2,
-            'Cp1': Cp1,
-            'Cp2': Cp2,
-            'Pf1': Pf1,
-            'Pf2': Pf2,
-            'Cl1': Cl1,
-            'Cl2': Cl2,
             'Pf': Pf,
-            'control_w1_domega': control_values[0],
-            'control_w1_dsau': control_values[1],
-            'control_w1_dsbv': control_values[2],
-            'control_w2_domega': control_values[3],
-            'control_w2_dsau': control_values[4],
-            'control_w2_dsbv': control_values[5],
             'density': self.rou,
             'chord_length': self.c,
             'freestream_velocity': self.U0,
@@ -244,15 +188,52 @@ class AerodynamicsModel:
             'flow_save_attempts': 0,
         }
 
+        for idx in range(self.wing_count):
+            wing_no = idx + 1
+            data.update({
+                f'theta{wing_no}': motion[idx]['angle'],
+                f'omega{wing_no}': motion[idx]['omega'],
+                f'alpha{wing_no}': motion[idx]['omgac'],
+                f'sa{wing_no}': motion[idx]['sa'],
+                f'sau{wing_no}': motion[idx]['sau'],
+                f'saac{wing_no}': motion[idx]['saac'],
+                f'sb{wing_no}': motion[idx]['sb'],
+                f'sbv{wing_no}': motion[idx]['sbv'],
+                f'sbac{wing_no}': motion[idx]['sbac'],
+                f'v_x{wing_no}': motion[idx]['sau'],
+                f'v_y{wing_no}': motion[idx]['sbv'],
+                f'a_x{wing_no}': motion[idx]['saac'],
+                f'a_y{wing_no}': motion[idx]['sbac'],
+                f'Fx{wing_no}': fxs[idx],
+                f'Fy{wing_no}': fys[idx],
+                f'M{wing_no}': torques[idx],
+                f'T{wing_no}': fxs[idx],
+                f'Ct{wing_no}': cts[idx],
+                f'P{wing_no}': powers[idx],
+                f'Cp{wing_no}': cps[idx],
+                f'Pf{wing_no}': pfs[idx],
+                f'Cl{wing_no}': cls[idx],
+                f'control_w{wing_no}_domega': control_values[3 * idx],
+                f'control_w{wing_no}_dsau': control_values[3 * idx + 1],
+                f'control_w{wing_no}_dsbv': control_values[3 * idx + 2],
+            })
+
+        forces = [np.array([fxs[idx], fys[idx]]) for idx in range(self.wing_count)]
+        zero_force = np.zeros(2)
         return {
-            "forces1": np.array([fx1, fy1]),
-            "cl1": Cl1,
-            "ct1": Ct1,
-            "cp1": Cp1,
-            "forces2": np.array([fx2, fy2]),
-            "cl2": Cl2,
-            "ct2": Ct2,
-            "cp2": Cp2,
+            "forces": forces,
+            "cls": cls,
+            "cts": cts,
+            "cps": cps,
+            "powers": powers,
+            "forces1": forces[0] if self.wing_count >= 1 else zero_force,
+            "cl1": cls[0] if self.wing_count >= 1 else 0.0,
+            "ct1": cts[0] if self.wing_count >= 1 else 0.0,
+            "cp1": cps[0] if self.wing_count >= 1 else 0.0,
+            "forces2": forces[1] if self.wing_count >= 2 else zero_force,
+            "cl2": cls[1] if self.wing_count >= 2 else 0.0,
+            "ct2": cts[1] if self.wing_count >= 2 else 0.0,
+            "cp2": cps[1] if self.wing_count >= 2 else 0.0,
             "pf": Pf,
             "data": data,
             "response": response,
@@ -366,185 +347,6 @@ class AerodynamicsModel:
 
     def _update_last_force_for_save(self, force_response):
         self.last_force_for_save = self._force_vector(force_response)
-
-    def _quasi_steady_solve(self, state1, state2, sim_time):
-        """准定常解算器，返回与环境层兼容的数据结构和返回值格式。
-
-        接受两个机翼的状态（state1, state2），在 1/2/3DOF 模式下兼容原有状态格式。
-        返回：(np.array([Fx1, Fy1]), Cl1, Ct1, Cp1, np.array([Fx2, Fy2]), Cl2, Ct2, Cp2, Pf)
-        """
-        # 内部帮助函数：对单翼状态计算力学量（重用原来准定常的计算逻辑）
-        def compute_single(state):
-            # 初始化
-            theta = omega = alpha = 0.0
-            v_x = self.U0
-            v_y = 0.0
-            a_x = a_y = 0.0
-
-            # 根据自由度提取
-            if len(state) == 6:  # 1DOF
-                theta = state[0]
-                omega = state[1]
-                alpha = state[2]
-                v_x = self.U0
-                v_y = 0.0
-            elif len(state) == 12:  # 2DOF
-                # [y, theta, vy, omega, ay, alpha, prev_...]
-                theta = state[1]
-                v_y = state[2]
-                omega = state[3]
-                a_y = state[4]
-                alpha = state[5]
-                v_x = self.U0
-            else:  # 3DOF
-                theta = state[2]
-                v_x = state[3] + self.U0
-                v_y = state[4]
-                omega = state[5]
-                a_x = state[6]
-                a_y = state[7]
-                alpha = state[8]
-
-            # 速度分量在机翼坐标系的转换
-            u_x = v_x * np.cos(theta) + v_y * np.sin(theta)
-            u_y = -v_x * np.sin(theta) + v_y * np.cos(theta)
-            u_bar = np.sqrt(u_x ** 2 + u_y ** 2)
-            AOAe = np.arctan2(u_y, u_x)
-
-            # 几何/经验气动系数（复用原公式）
-            CL = 1.7 * np.sin(2 * AOAe)
-            CD = 0.5 * (3.24 + 0.05) - 0.5 * (3.24 - 0.05) * np.cos(2 * AOAe)
-            CH = np.cos(AOAe) * CD - np.sin(AOAe) * CL
-            CV = np.sin(AOAe) * CD + np.cos(AOAe) * CL
-
-            lamty = 0.25 * np.pi * self.rou * self.c ** 2
-            lamtyo = 0.25 * np.pi * self.rou * (-0.2) * self.c ** 3
-            Crot = 1.0
-
-            dfxt_r = -0.5 * self.rou * u_bar ** 2 * CH * self.c
-            dfyt_r = 0.5 * self.rou * u_bar ** 2 * CV * self.c
-            dfxa_r = -(lamty * u_y * omega - lamtyo * omega ** 2)
-            dfya_r = (-lamty * a_y + lamtyo * alpha)
-            dfyr_r = Crot * self.rou * u_bar * omega * self.c ** 2
-
-            Fx = dfxt_r + dfxa_r
-            Fy = dfyt_r + dfya_r + dfyr_r
-
-            # 推力（局部转到全局）
-            T = Fx * np.cos(theta) + Fy * np.sin(theta)
-
-            # 推力系数
-            q = 0.5 * self.rou * v_x ** 2
-            if q == 0:
-                Ct = 0.0
-            else:
-                Ct = T / (q * self.c)
-            Ct = np.clip(Ct, -PHYSICS_CONFIG['C_t_set'], PHYSICS_CONFIG['C_t_set'])
-
-            # 升力系数 CL（无量纲）沿用上面 CL
-            Cl = CL
-
-            # 气动功率（假设转矩项为0）
-            torque = 0.0
-            P = Fx * v_x + Fy * v_y + torque * omega
-
-            # 功率系数 Cp
-            if v_x == 0:
-                Cp = 0.0
-            else:
-                Cp = P / (0.5 * self.rou * self.c * v_x ** 3)
-                Cp = max(min(Cp, 20.0), -20.0)
-
-            # 功率效率 Pf（Ct/Cp）
-            if Cp == 0:
-                Pf_local = 0.0
-            else:
-                Pf_local = Ct / Cp
-
-            # 返回所有量与中间量（用于组装记录结构）
-            return {
-                'theta': theta,
-                'omega': omega,
-                'alpha': alpha,
-                'v_x': v_x,
-                'v_y': v_y,
-                'a_x': a_x,
-                'a_y': a_y,
-
-                'u_x': u_x,
-                'u_y': u_y,
-                'u_bar': u_bar,
-                'AOAe': AOAe,
-                'CL': CL,
-                'CD': CD,
-                'CH': CH,
-                'CV': CV,
-                'lamty': lamty,
-                'lamtyo': lamtyo,
-                'dfxt_r': dfxt_r,
-                'dfyt_r': dfyt_r,
-                'dfxa_r': dfxa_r,
-                'dfya_r': dfya_r,
-                'dfyr_r': dfyr_r,
-
-                'Fx': Fx,
-                'Fy': Fy,
-                'T': T,
-                'q': q,
-                'Ct': Ct,
-                'Cl': Cl,
-                'P': P,
-                'Cp': Cp,
-                'Pf': Pf_local
-            }
-
-        # 计算两翼
-        res1 = compute_single(state1)
-        res2 = compute_single(state2)
-
-        # 组装与 CFD 相同的数据字典字段名
-        data = {
-            'theta1': res1['theta'],
-            'theta2': res2['theta'],
-            'omega1': res1['omega'],
-            'omega2': res2['omega'],
-            'alpha1': res1['alpha'],
-            'alpha2': res2['alpha'],
-            'v_x1': res1['v_x'],
-            'v_x2': res2['v_x'],
-            'v_y1': res1['v_y'],
-            'v_y2': res2['v_y'],
-            'a_x1': res1['a_x'],
-            'a_x2': res2['a_x'],
-            'a_y1': res1['a_y'],
-            'a_y2': res2['a_y'],
-            'Fx1': res1['Fx'],
-            'Fx2': res2['Fx'],
-            'Fy1': res1['Fy'],
-            'Fy2': res2['Fy'],
-            'T1': res1['T'],
-            'T2': res2['T'],
-            'Ct1': res1['Ct'],
-            'Ct2': res2['Ct'],
-            'P1': res1['P'],
-            'P2': res2['P'],
-            'Cp1': res1['Cp'],
-            'Cp2': res2['Cp'],
-            'Pf1': res1['Pf'],
-            'Pf2': res2['Pf'],
-            'Cl1': res1['Cl'],
-            'Cl2': res2['Cl'],
-            'Pf': (res1['Pf'] + res2['Pf']) / 2.0 if (res1['Pf'] is not None and res2['Pf'] is not None) else 0.0,
-            'density': self.rou,
-            'chord_length': self.c,
-            'freestream_velocity': self.U0,
-            'source': 'quasi'
-        }
-
-        # 记录并返回与 CFD 相同的返回结构
-        self._record_data(data)
-
-        return np.array([res1['Fx'], res1['Fy']]), res1['Cl'], res1['Ct'], res1['Cp'], np.array([res2['Fx'], res2['Fy']]), res2['Cl'], res2['Ct'], res2['Cp'], data['Pf']
 
     def reset(self):
         """重置模型状态并保存数据"""

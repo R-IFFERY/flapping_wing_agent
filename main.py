@@ -41,6 +41,9 @@ def parse_args():
     parser.add_argument('--dof_mode', type=str, default=ENV_CONFIG.get('dof_mode', '2dof'),
                       choices=['1dof', '2dof', '3dof'],
                       help='自由度模式')
+    parser.add_argument('--wing_count', type=int, default=ENV_CONFIG.get('cfd_zmq', {}).get('wing_count', 2),
+                      choices=[1, 2],
+                      help='翼数量，可选 1 或 2；必须与 CFD 服务端配置一致')
     parser.add_argument('--episodes', type=int, default=700,
                       help='训练回合数')
     parser.add_argument('--device', type=str, default='auto',
@@ -63,6 +66,7 @@ def main():
     # 解析命令行参数
     args = parse_args()
     ENV_CONFIG['dof_mode'] = args.dof_mode
+    ENV_CONFIG.setdefault('cfd_zmq', {})['wing_count'] = args.wing_count
     if args.cfd_host is not None:
         ENV_CONFIG.setdefault('cfd_zmq', {})['host'] = args.cfd_host
     if args.cfd_port is not None:
@@ -72,13 +76,12 @@ def main():
 
     # 创建保存目录
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    save_dir = os.path.join('results', f'{ENV_CONFIG["dof_mode"]}_{timestamp}')
+    save_dir = os.path.join('results', f'{ENV_CONFIG["dof_mode"]}_{args.wing_count}wing_{timestamp}')
     os.makedirs(save_dir, exist_ok=True)
 
     # 初始化环境（传入保存路径）
     env = FlappingWingEnv(
         dof_mode=ENV_CONFIG['dof_mode'],
-        use_cfd=ENV_CONFIG.get('use_cfd', False),
         save_dir=save_dir
     )
     # 从环境获取状态和动作空间维度
@@ -88,9 +91,10 @@ def main():
     # 打印初始化信息
     print(f"\n初始化信息:")
     print(f"自由度模式: {ENV_CONFIG['dof_mode']}")
+    print(f"翼数量: {ENV_CONFIG['cfd_zmq']['wing_count']}")
     print(f"状态空间维度: {state_dim}")
     print(f"动作空间维度: {action_dim}")
-    print(f"气动模式: {'zmq-cfd' if ENV_CONFIG.get('use_cfd', False) else 'quasi-steady'}")
+    print("气动模式: zmq-cfd")
     print(f"设备: {device}\n")
 
     # 初始化智能体
@@ -110,7 +114,11 @@ def main():
         print(f"加载预训练模型: {args.load_model}")
 
     # 初始化可视化器
-    visualizer = FlappingWingVisualizer(save_dir=save_dir, dof_mode=ENV_CONFIG['dof_mode'])
+    visualizer = FlappingWingVisualizer(
+        save_dir=save_dir,
+        dof_mode=ENV_CONFIG['dof_mode'],
+        wing_count=ENV_CONFIG['cfd_zmq']['wing_count'],
+    )
     env.set_visualizer(visualizer)  # 设置环境的可视化器
 
     # 训练循环

@@ -13,9 +13,11 @@ plt.rcParams['font.family'] = ['DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 class FlappingWingVisualizer:
-    def __init__(self, save_dir, dof_mode='1dof'):
+    def __init__(self, save_dir, dof_mode='1dof', wing_count=2):
         self.save_dir = save_dir
         self.dof_mode = dof_mode
+        self.wing_count = int(wing_count)
+        self.max_displacement = PHYSICS_CONFIG['max_displacement']
         os.makedirs(save_dir, exist_ok=True)
 
         # 根据自由度模式初始化维度
@@ -49,32 +51,32 @@ class FlappingWingVisualizer:
         self.time_steps.append(step)
         self.actions.append(action)
 
-        # 3DOF双扑翼状态向量：[x_position, y_1, theta_1, y_2, theta_2, v_x, v_y1, omega_1, v_y2, omega_2, a_x, a_y1, alpha_1, a_y2, alpha_2]
         if self.dof_mode == '3dof':
+            block = 3 * self.wing_count
             current_state = {
-                'position': [state[0], state[1], state[2], state[3], state[4]],  # [x_position, y_1, theta_1, y_2, theta_2]
-                'velocity': [state[5], state[6], state[7], state[8], state[9]],  # [v_x, v_y1, omega_1, v_y2, omega_2]
-                'acceleration': [state[10], state[11], state[12], state[13], state[14]]  # [a_x, a_y1, alpha_1, a_y2, alpha_2]
+                'position': state[:block],
+                'velocity': state[block:2 * block],
+                'acceleration': state[2 * block:3 * block],
             }
-        # 2DOF双扑翼状态向量：[y1, theta1, y2, theta2, vy1, omega1, vy2, omega2, ay1, alpha1, ay2, alpha2]
         elif self.dof_mode == '2dof':
+            block = 2 * self.wing_count
             current_state = {
-                'position': [state[0], state[1], state[2], state[3]],  # [y1, theta1, y2, theta2]
-                'velocity': [state[4], state[5], state[6], state[7]],  # [vy1, omega1, vy2, omega2]
-                'acceleration': [state[8], state[9], state[10], state[11]]  # [ay1, alpha1, ay2, alpha2]
+                'position': state[:block],
+                'velocity': state[block:2 * block],
+                'acceleration': state[2 * block:3 * block],
             }
-        # 1DOF单扑翼状态向量：[theta1, theta2, omega1, omega2, alpha1, alpha2]
         elif self.dof_mode == '1dof':
+            block = self.wing_count
             current_state = {
-                'position': [state[0], state[1]],  # [theta1, theta2]
-                'velocity': [state[2], state[3]],  # [omega1, omega2]
-                'acceleration': [state[4], state[5]]  # [alpha1, alpha2]
+                'position': state[:block],
+                'velocity': state[block:2 * block],
+                'acceleration': state[2 * block:3 * block],
             }
 
         # 存储解析后的状态
-        self.positions.append(current_state['position'])
-        self.velocities.append(current_state['velocity'])
-        self.accelerations.append(current_state['acceleration'])
+        self.positions.append(np.array(current_state['position'], dtype=float))
+        self.velocities.append(np.array(current_state['velocity'], dtype=float))
+        self.accelerations.append(np.array(current_state['acceleration'], dtype=float))
         self.ct1s.append(ct1)
         self.ct2s.append(ct2)
         self.cp1s.append(cp1)
@@ -95,78 +97,36 @@ class FlappingWingVisualizer:
         # 计算实际时间序列
         time_series = np.array(self.time_steps) * PHYSICS_CONFIG['action_interval']
 
+        def plot_series(ax, values, labels, ylabel, title):
+            for idx, label in enumerate(labels):
+                ax.plot(time_series, values[:, idx], label=label)
+            ax.set_xlabel('Time (s)')
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+            ax.grid(True)
+            ax.legend()
+
+        pos_labels, vel_labels, acc_labels = self._state_column_labels()
+
         # 位置历史
         ax1 = fig.add_subplot(421)
-        if self.dof_mode == '1dof':
-            ax1.plot(time_series, positions[:, 0], 'b-', label='pitch 1')
-            ax1.plot(time_series, positions[:, 1], 'r-', label='pitch 2')
-        elif self.dof_mode == '2dof':
-            ax1.plot(time_series, positions[:, 0], 'g-', label='y_1 (front wing)')
-            ax1.plot(time_series, positions[:, 1], 'b-', label='theta_1 (front wing)')
-            ax1.plot(time_series, positions[:, 2], 'r-', label='y_2 (rear wing)')
-            ax1.plot(time_series, positions[:, 3], 'm-', label='theta_2 (rear wing)')
-        else:  # 3dof
-            ax1.plot(time_series, positions[:, 0], 'r-', label='x_position')
-            ax1.plot(time_series, positions[:, 1], 'g-', label='y_1 (front wing)')
-            ax1.plot(time_series, positions[:, 2], 'b-', label='theta_1 (front wing)')
-            ax1.plot(time_series, positions[:, 3], 'c-', label='y_2 (rear wing)')
-            ax1.plot(time_series, positions[:, 4], 'm-', label='theta_2 (rear wing)')
-        ax1.set_xlabel('Time (s)')
-        ax1.set_ylabel('Position / angle')
-        ax1.set_title('Position and Angle History')
-        ax1.grid(True)
-        ax1.legend()
+        plot_series(ax1, positions, pos_labels, 'Position / angle', 'Position and Angle History')
 
         # 速度历史
         ax2 = fig.add_subplot(423)
-        if self.dof_mode == '1dof':
-            ax2.plot(time_series, velocities[:, 0], 'b-', label='angular velocity 1')
-            ax2.plot(time_series, velocities[:, 1], 'r-', label='angular velocity 2')
-        elif self.dof_mode == '2dof':
-            ax2.plot(time_series, velocities[:, 0], 'g-', label='v_y1 (front wing)')
-            ax2.plot(time_series, velocities[:, 1], 'b-', label='omega_1 (front wing)')
-            ax2.plot(time_series, velocities[:, 2], 'r-', label='v_y2 (rear wing)')
-            ax2.plot(time_series, velocities[:, 3], 'm-', label='omega_2 (rear wing)')
-        else:  # 3dof
-            ax2.plot(time_series, velocities[:, 0], 'r-', label='v_x')
-            ax2.plot(time_series, velocities[:, 1], 'g-', label='v_y1 (front wing)')
-            ax2.plot(time_series, velocities[:, 2], 'b-', label='omega_1 (front wing)')
-            ax2.plot(time_series, velocities[:, 3], 'c-', label='v_y2 (rear wing)')
-            ax2.plot(time_series, velocities[:, 4], 'm-', label='omega_2 (rear wing)')
-        ax2.set_xlabel('Time (s)')
-        ax2.set_ylabel('Velocity')
-        ax2.set_title('Velocity History')
-        ax2.grid(True)
-        ax2.legend()
+        plot_series(ax2, velocities, vel_labels, 'Velocity', 'Velocity History')
 
         # 加速度历史
         ax3 = fig.add_subplot(425)
-        if self.dof_mode == '1dof':
-            ax3.plot(time_series, accelerations[:, 0], 'b-', label='angular acceleration 1')
-            ax3.plot(time_series, accelerations[:, 1], 'r-', label='angular acceleration 2')
-        elif self.dof_mode == '2dof':
-            ax3.plot(time_series, accelerations[:, 0], 'g-', label='a_y1 (front wing)')
-            ax3.plot(time_series, accelerations[:, 1], 'b-', label='alpha_1 (front wing)')
-            ax3.plot(time_series, accelerations[:, 2], 'r-', label='a_y2 (rear wing)')
-            ax3.plot(time_series, accelerations[:, 3], 'm-', label='alpha_2 (rear wing)')
-        else:  # 3dof
-            ax3.plot(time_series, accelerations[:, 0], 'r-', label='a_x')
-            ax3.plot(time_series, accelerations[:, 1], 'g-', label='a_y1 (front wing)')
-            ax3.plot(time_series, accelerations[:, 2], 'b-', label='alpha_1 (front wing)')
-            ax3.plot(time_series, accelerations[:, 3], 'c-', label='a_y2 (rear wing)')
-            ax3.plot(time_series, accelerations[:, 4], 'm-', label='alpha_2 (rear wing)')
-        ax3.set_xlabel('Time (s)')
-        ax3.set_ylabel('Acceleration')
-        ax3.set_title('Acceleration History')
-        ax3.grid(True)
-        ax3.legend()
+        plot_series(ax3, accelerations, acc_labels, 'Acceleration', 'Acceleration History')
 
         # 绘制推力系数历史
         ax4 = fig.add_subplot(422)
-        ax4.plot(time_series, self.ct1s, 'r-', label='front wing Ct')
-        ax4.plot(time_series, self.ct2s, 'g-', label='rear wing Ct')
-        ax4.plot(time_series, self.cp1s, 'b-', label='front wing Cp')
-        ax4.plot(time_series, self.cp2s, 'c-', label='rear wing Cp')
+        ax4.plot(time_series, self.ct1s, 'r-', label='wing 1 Ct')
+        ax4.plot(time_series, self.cp1s, 'b-', label='wing 1 Cp')
+        if self.wing_count >= 2:
+            ax4.plot(time_series, self.ct2s, 'g-', label='wing 2 Ct')
+            ax4.plot(time_series, self.cp2s, 'c-', label='wing 2 Cp')
         ax4.set_xlabel('Time (s)')
         ax4.set_ylabel('Coefficient')
         ax4.set_title('Force and Power Coefficients')
@@ -184,19 +144,10 @@ class FlappingWingVisualizer:
 
         # 绘制动作历史
         ax6 = fig.add_subplot(426)
-        if actions.ndim == 2 and actions.shape[1] == 6:
-            labels = ['w1_domega', 'w1_dsau', 'w1_dsbv', 'w2_domega', 'w2_dsau', 'w2_dsbv']
-            for idx, label in enumerate(labels):
-                ax6.plot(time_series, actions[:, idx], label=label)
-        elif self.dof_mode == '1dof':
-            ax6.plot(time_series, actions, 'b-', label='angular velocity increment')
-        elif self.dof_mode == '2dof':
-            ax6.plot(time_series, actions[:, 0], 'g-', label='heave velocity increment')
-            ax6.plot(time_series, actions[:, 1], 'b-', label='angular velocity increment')
-        else:  # 3dof
-            ax6.plot(time_series, actions[:, 0], 'r-', label='inline velocity increment')
-            ax6.plot(time_series, actions[:, 1], 'g-', label='heave velocity increment')
-            ax6.plot(time_series, actions[:, 2], 'b-', label='angular velocity increment')
+        if actions.ndim == 1:
+            actions = actions.reshape(-1, 1)
+        for idx in range(actions.shape[1]):
+            ax6.plot(time_series, actions[:, idx], label=f'action_{idx + 1}')
         ax6.set_xlabel('Time (s)')
         ax6.set_ylabel('Action')
         ax6.set_title('Action History')
@@ -230,7 +181,7 @@ class FlappingWingVisualizer:
         self._save_episode_data(episode, time_series)
 
     def _save_episode_data(self, episode, time_series):
-        """保存回合数据到CSV，支持双扑翼3DOF"""
+        """保存回合数据到CSV。"""
         data = {
             'time': time_series,
         }
@@ -238,106 +189,56 @@ class FlappingWingVisualizer:
         velocities = np.array(self.velocities)
         accelerations = np.array(self.accelerations)
         actions = np.array(self.actions)
-        cfd_action_mode = actions.ndim == 2 and actions.shape[1] == 6
-        # 3DOF双扑翼参数
-        if self.dof_mode == '3dof':
-            data.update({
-                'x_position': positions[:, 0],
-                'y1': positions[:, 1],
-                'theta1': positions[:, 2],
-                'y2': positions[:, 3],
-                'theta2': positions[:, 4],
-                'v_x': velocities[:, 0],
-                'v_y1': velocities[:, 1],
-                'omega1': velocities[:, 2],
-                'v_y2': velocities[:, 3],
-                'omega2': velocities[:, 4],
-                'a_x': accelerations[:, 0],
-                'a_y1': accelerations[:, 1],
-                'alpha1': accelerations[:, 2],
-                'a_y2': accelerations[:, 3],
-                'alpha2': accelerations[:, 4],
-                'ct1': self.ct1s,
-                'ct2': self.ct2s,
-                'cp1': self.cp1s,
-                'cp2': self.cp2s,
-                'pf': self.pfs,
-                'stab': self.stabs,
-                'reward': self.rewards
-            })
-            if not cfd_action_mode:
-                data.update({
-                    'action_x': actions[:, 0],
-                    'action_y1': actions[:, 1],
-                    'action_theta1': actions[:, 2],
-                    'action_y2': actions[:, 3],
-                    'action_theta2': actions[:, 4],
-                })
-        # 2DOF参数
-        elif self.dof_mode == '2dof':
-            data.update({
-                'y_1': positions[:, 0],
-                'theta_1': positions[:, 1],
-                'y_2': positions[:, 2],
-                'theta_2': positions[:, 3],
-                'v_y1': velocities[:, 0],
-                'omega_1': velocities[:, 1],
-                'v_y2': velocities[:, 2],
-                'omega_2': velocities[:, 3],
-                'a_y1': accelerations[:, 0],
-                'alpha_1': accelerations[:, 1],
-                'a_y2': accelerations[:, 2],
-                'alpha_2': accelerations[:, 3],
-                'ct1': self.ct1s,
-                'ct2': self.ct2s,
-                'cp1': self.cp1s,
-                'cp2': self.cp2s,
-                'pf': self.pfs,
-                'stab': self.stabs,
-                'reward': self.rewards
-            })
-            if not cfd_action_mode:
-                data.update({
-                    'action_y1': actions[:, 0],
-                    'action_theta1': actions[:, 1],
-                    'action_y2': actions[:, 2],
-                    'action_theta2': actions[:, 3],
-                })
-        # 1DOF参数
-        elif self.dof_mode == '1dof':
-            data.update({
-                'theta_1': positions[:, 0],
-                'theta_2': positions[:, 1],
-                'omega_1': velocities[:, 0],
-                'omega_2': velocities[:, 1],
-                'alpha_1': accelerations[:, 0],
-                'alpha_2': accelerations[:, 1],
-                'ct1': self.ct1s,
-                'ct2': self.ct2s,
-                'cp1': self.cp1s,
-                'cp2': self.cp2s,
-                'pf': self.pfs,
-                'stab': self.stabs,
-                'reward': self.rewards
-            })
-            if not cfd_action_mode:
-                data.update({
-                    'action_theta1': actions[:, 0],
-                    'action_theta2': actions[:, 1],
-                })
+        if actions.ndim == 1:
+            actions = actions.reshape(-1, 1)
 
-        if cfd_action_mode:
+        pos_labels, vel_labels, acc_labels = self._state_column_labels()
+        for idx, label in enumerate(pos_labels):
+            data[label] = positions[:, idx]
+        for idx, label in enumerate(vel_labels):
+            data[label] = velocities[:, idx]
+        for idx, label in enumerate(acc_labels):
+            data[label] = accelerations[:, idx]
+
+        data.update({
+            'ct1': self.ct1s,
+            'cp1': self.cp1s,
+            'pf': self.pfs,
+            'stab': self.stabs,
+            'reward': self.rewards,
+        })
+        if self.wing_count >= 2:
             data.update({
-                'action_w1_domega': actions[:, 0],
-                'action_w1_dsau': actions[:, 1],
-                'action_w1_dsbv': actions[:, 2],
-                'action_w2_domega': actions[:, 3],
-                'action_w2_dsau': actions[:, 4],
-                'action_w2_dsbv': actions[:, 5],
+                'ct2': self.ct2s,
+                'cp2': self.cp2s,
             })
+
+        for idx in range(actions.shape[1]):
+            data[f'action_{idx + 1}'] = actions[:, idx]
 
         df = pd.DataFrame(data)
         df.to_csv(os.path.join(self.save_dir, f'episode_{episode}_data.csv'), index=False)
+
+    def _state_column_labels(self):
+        pos_labels = []
+        vel_labels = []
+        acc_labels = []
+        if self.dof_mode == '1dof':
+            for wing_no in range(1, self.wing_count + 1):
+                pos_labels.append(f'theta_{wing_no}')
+                vel_labels.append(f'omega_{wing_no}')
+                acc_labels.append(f'alpha_{wing_no}')
+        elif self.dof_mode == '2dof':
+            for wing_no in range(1, self.wing_count + 1):
+                pos_labels.extend([f'y_{wing_no}', f'theta_{wing_no}'])
+                vel_labels.extend([f'v_y{wing_no}', f'omega_{wing_no}'])
+                acc_labels.extend([f'a_y{wing_no}', f'alpha_{wing_no}'])
+        else:
+            for wing_no in range(1, self.wing_count + 1):
+                pos_labels.extend([f'x_{wing_no}', f'y_{wing_no}', f'theta_{wing_no}'])
+                vel_labels.extend([f'v_x{wing_no}', f'v_y{wing_no}', f'omega_{wing_no}'])
+                acc_labels.extend([f'a_x{wing_no}', f'a_y{wing_no}', f'alpha_{wing_no}'])
+        return pos_labels, vel_labels, acc_labels
 
     def save_best_episode_animation(self, episode):
         """为最佳回合生成动画"""
