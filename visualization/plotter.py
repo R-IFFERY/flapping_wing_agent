@@ -8,7 +8,7 @@ os.environ.setdefault("MPLCONFIGDIR", os.path.join(os.getcwd(), ".matplotlib_cac
 import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.animation import FuncAnimation
-from config.config import PHYSICS_CONFIG
+from config.config import PHYSICS_CONFIG, ENV_CONFIG
 plt.rcParams['font.family'] = ['DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
@@ -37,16 +37,16 @@ class FlappingWingVisualizer:
         self.positions = []    # 存储位置信息
         self.velocities = []   # 存储速度信息
         self.accelerations = []  # 存储加速度信息
-        self.ct1s = []         # 存储推力系数1
-        self.ct2s = []
-        self.cp1s = []
-        self.cp2s = []
-        self.pfs = []
+        self.cls = [[] for _ in range(self.wing_count)]
+        self.cts = [[] for _ in range(self.wing_count)]
+        self.cps = [[] for _ in range(self.wing_count)]
+        self.total_cts = []
         self.stabs = []
         self.rewards = []     # 存储奖励值
         self.actions = []     # 存储动作值
 
-    def update(self, state, flow_data, reward, step, action, ct1, ct2, cp1, cp2, pf, stab):
+    def update(self, state, flow_data, reward, step, action,
+               wing_cts=None, wing_cps=None, wing_cls=None, total_ct=0.0, stab=0.0):
         """更新并存储数据"""
         self.time_steps.append(step)
         self.actions.append(action)
@@ -77,21 +77,22 @@ class FlappingWingVisualizer:
         self.positions.append(np.array(current_state['position'], dtype=float))
         self.velocities.append(np.array(current_state['velocity'], dtype=float))
         self.accelerations.append(np.array(current_state['acceleration'], dtype=float))
-        self.ct1s.append(ct1)
-        self.ct2s.append(ct2)
-        self.cp1s.append(cp1)
-        self.cp2s.append(cp2)
-        self.pfs.append(pf)
+        wing_cts = self._pad_wing_values(wing_cts if wing_cts is not None else [0.0] * self.wing_count)
+        wing_cps = self._pad_wing_values(wing_cps if wing_cps is not None else [0.0] * self.wing_count)
+        wing_cls = self._pad_wing_values(wing_cls if wing_cls is not None else [0.0] * self.wing_count)
+        for wing_idx in range(self.wing_count):
+            self.cts[wing_idx].append(wing_cts[wing_idx])
+            self.cps[wing_idx].append(wing_cps[wing_idx])
+            self.cls[wing_idx].append(wing_cls[wing_idx])
+        self.total_cts.append(total_ct)
         self.stabs.append(stab)
         self.rewards.append(reward)
 
     def save_episode_summary(self, episode):
         """保存回合总结数据"""
-        # 创建图像，4x2布局
-        fig = plt.figure(figsize=(15, 25))
+        fig, axes = plt.subplots(4, 2, figsize=(16, 20))
         positions = np.array(self.positions)
         velocities = np.array(self.velocities)
-        accelerations = np.array(self.accelerations)
         actions = np.array(self.actions)
 
         # 计算实际时间序列
@@ -106,71 +107,69 @@ class FlappingWingVisualizer:
             ax.grid(True)
             ax.legend()
 
-        pos_labels, vel_labels, acc_labels = self._state_column_labels()
+        pos_labels, vel_labels, _ = self._state_column_labels()
 
-        # 位置历史
-        ax1 = fig.add_subplot(421)
+        # 第一行第一列：位置曲线
+        ax1 = axes[0, 0]
         plot_series(ax1, positions, pos_labels, 'Position / angle', 'Position and Angle History')
 
-        # 速度历史
-        ax2 = fig.add_subplot(423)
+        # 第一行第二列：速度曲线
+        ax2 = axes[0, 1]
         plot_series(ax2, velocities, vel_labels, 'Velocity', 'Velocity History')
 
-        # 加速度历史
-        ax3 = fig.add_subplot(425)
-        plot_series(ax3, accelerations, acc_labels, 'Acceleration', 'Acceleration History')
+        # 第二行第一列：升力系数曲线
+        ax3 = axes[1, 0]
+        for wing_idx in range(self.wing_count):
+            ax3.plot(time_series, self.cls[wing_idx], label=f'wing[{wing_idx}].Cl')
+        ax3.set_xlabel('Time (s)')
+        ax3.set_ylabel('Cl')
+        ax3.set_title('Lift Coefficient History')
+        ax3.grid(True)
+        ax3.legend()
 
-        # 绘制推力系数历史
-        ax4 = fig.add_subplot(422)
-        ax4.plot(time_series, self.ct1s, 'r-', label='wing 1 Ct')
-        ax4.plot(time_series, self.cp1s, 'b-', label='wing 1 Cp')
-        if self.wing_count >= 2:
-            ax4.plot(time_series, self.ct2s, 'g-', label='wing 2 Ct')
-            ax4.plot(time_series, self.cp2s, 'c-', label='wing 2 Cp')
+        # 第二行第二列：推力系数曲线
+        ax4 = axes[1, 1]
+        for wing_idx in range(self.wing_count):
+            ax4.plot(time_series, self.cts[wing_idx], label=f'wing[{wing_idx}].Ct')
         ax4.set_xlabel('Time (s)')
-        ax4.set_ylabel('Coefficient')
-        ax4.set_title('Force and Power Coefficients')
+        ax4.set_ylabel('Ct')
+        ax4.set_title('Thrust Coefficient History')
         ax4.grid(True)
         ax4.legend()
 
-        # 绘制奖励历史
-        ax5 = fig.add_subplot(424)
-        ax5.plot(time_series, self.rewards, 'k-', label='reward')
+        # 第三行第一列：功率系数曲线
+        ax5 = axes[2, 0]
+        for wing_idx in range(self.wing_count):
+            ax5.plot(time_series, self.cps[wing_idx], label=f'wing[{wing_idx}].Cp')
         ax5.set_xlabel('Time (s)')
-        ax5.set_ylabel('Reward')
-        ax5.set_title('Reward History')
+        ax5.set_ylabel('Cp')
+        ax5.set_title('Power Coefficient History')
         ax5.grid(True)
         ax5.legend()
 
-        # 绘制动作历史
-        ax6 = fig.add_subplot(426)
+        # 第三行第二列：动作曲线
+        ax6 = axes[2, 1]
         if actions.ndim == 1:
             actions = actions.reshape(-1, 1)
-        for idx in range(actions.shape[1]):
-            ax6.plot(time_series, actions[:, idx], label=f'action_{idx + 1}')
+        action_labels = self._action_column_labels(actions.shape[1])
+        for idx, label in enumerate(action_labels):
+            ax6.plot(time_series, actions[:, idx], label=label)
         ax6.set_xlabel('Time (s)')
         ax6.set_ylabel('Action')
         ax6.set_title('Action History')
         ax6.grid(True)
         ax6.legend()
 
-        # 稳定性历史
-        ax7 = fig.add_subplot(427)
-        ax7.plot(time_series, self.stabs, 'm-', label='lift coefficient fluctuation')
+        # 第四行第一列：奖励曲线
+        ax7 = axes[3, 0]
+        ax7.plot(time_series, self.rewards, 'k-', label='reward')
         ax7.set_xlabel('Time (s)')
-        ax7.set_ylabel('Stability metric')
-        ax7.set_title('Stability History')
+        ax7.set_ylabel('Reward')
+        ax7.set_title('Reward History')
         ax7.grid(True)
         ax7.legend()
 
-        # 推力效率历史
-        ax8 = fig.add_subplot(428)
-        ax8.plot(time_series, self.pfs, 'c-', label='propulsive efficiency')
-        ax8.set_xlabel('Time (s)')
-        ax8.set_ylabel('Efficiency')
-        ax8.set_title('Propulsive Efficiency History')
-        ax8.grid(True)
-        ax8.legend()
+        fig.delaxes(axes[3, 1])
 
         # 调整子图之间的间距
         plt.tight_layout()
@@ -201,20 +200,18 @@ class FlappingWingVisualizer:
             data[label] = accelerations[:, idx]
 
         data.update({
-            'ct1': self.ct1s,
-            'cp1': self.cp1s,
-            'pf': self.pfs,
+            'total_ct': self.total_cts,
             'stab': self.stabs,
             'reward': self.rewards,
         })
-        if self.wing_count >= 2:
-            data.update({
-                'ct2': self.ct2s,
-                'cp2': self.cp2s,
-            })
+        for wing_idx in range(self.wing_count):
+            data[f'wing[{wing_idx}]_cl'] = self.cls[wing_idx]
+            data[f'wing[{wing_idx}]_ct'] = self.cts[wing_idx]
+            data[f'wing[{wing_idx}]_cp'] = self.cps[wing_idx]
 
-        for idx in range(actions.shape[1]):
-            data[f'action_{idx + 1}'] = actions[:, idx]
+        action_labels = self._action_column_labels(actions.shape[1])
+        for idx, label in enumerate(action_labels):
+            data[label] = actions[:, idx]
 
         df = pd.DataFrame(data)
         df.to_csv(os.path.join(self.save_dir, f'episode_{episode}_data.csv'), index=False)
@@ -224,21 +221,47 @@ class FlappingWingVisualizer:
         vel_labels = []
         acc_labels = []
         if self.dof_mode == '1dof':
-            for wing_no in range(1, self.wing_count + 1):
-                pos_labels.append(f'theta_{wing_no}')
-                vel_labels.append(f'omega_{wing_no}')
-                acc_labels.append(f'alpha_{wing_no}')
+            for wing_idx in range(self.wing_count):
+                pos_labels.append(f'wing[{wing_idx}]_theta')
+                vel_labels.append(f'wing[{wing_idx}]_omega')
+                acc_labels.append(f'wing[{wing_idx}]_alpha')
         elif self.dof_mode == '2dof':
-            for wing_no in range(1, self.wing_count + 1):
-                pos_labels.extend([f'y_{wing_no}', f'theta_{wing_no}'])
-                vel_labels.extend([f'v_y{wing_no}', f'omega_{wing_no}'])
-                acc_labels.extend([f'a_y{wing_no}', f'alpha_{wing_no}'])
+            for wing_idx in range(self.wing_count):
+                pos_labels.extend([f'wing[{wing_idx}]_y', f'wing[{wing_idx}]_theta'])
+                vel_labels.extend([f'wing[{wing_idx}]_v_y', f'wing[{wing_idx}]_omega'])
+                acc_labels.extend([f'wing[{wing_idx}]_a_y', f'wing[{wing_idx}]_alpha'])
         else:
-            for wing_no in range(1, self.wing_count + 1):
-                pos_labels.extend([f'x_{wing_no}', f'y_{wing_no}', f'theta_{wing_no}'])
-                vel_labels.extend([f'v_x{wing_no}', f'v_y{wing_no}', f'omega_{wing_no}'])
-                acc_labels.extend([f'a_x{wing_no}', f'a_y{wing_no}', f'alpha_{wing_no}'])
+            for wing_idx in range(self.wing_count):
+                pos_labels.extend([f'wing[{wing_idx}]_x', f'wing[{wing_idx}]_y', f'wing[{wing_idx}]_theta'])
+                vel_labels.extend([f'wing[{wing_idx}]_v_x', f'wing[{wing_idx}]_v_y', f'wing[{wing_idx}]_omega'])
+                acc_labels.extend([f'wing[{wing_idx}]_a_x', f'wing[{wing_idx}]_a_y', f'wing[{wing_idx}]_alpha'])
         return pos_labels, vel_labels, acc_labels
+
+    def _action_column_labels(self, action_dim):
+        if action_dim == self.wing_count * 3:
+            components = ['domega', 'dsau', 'dsbv']
+        elif self.dof_mode == '1dof':
+            components = ['domega']
+        elif self.dof_mode == '2dof':
+            motion_axis = ENV_CONFIG.get('cfd_zmq', {}).get('motion_axis_2dof', 'sb')
+            heave_component = 'dsau' if motion_axis == 'sa' else 'dsbv'
+            components = [heave_component, 'domega']
+        else:
+            components = ['domega', 'dsau', 'dsbv']
+
+        labels = []
+        for wing_idx in range(self.wing_count):
+            for component in components:
+                labels.append(f'wing[{wing_idx}]_{component}')
+        if len(labels) != action_dim:
+            labels = [f'action_{idx + 1}' for idx in range(action_dim)]
+        return labels
+
+    def _pad_wing_values(self, values):
+        values = list(values)
+        if len(values) < self.wing_count:
+            values.extend([0.0] * (self.wing_count - len(values)))
+        return [float(v) for v in values[:self.wing_count]]
 
     def save_best_episode_animation(self, episode):
         """为最佳回合生成动画"""
@@ -365,10 +388,10 @@ class FlappingWingVisualizer:
         ax1.legend()
 
         # 绘制平均推力系数曲线
-        ax2.plot(episodes, history_data['mean_cts'], 'm-', label='Mean Thrust Coefficient')
+        ax2.plot(episodes, history_data['mean_total_cts'], 'm-', label='Mean Total Ct')
         ax2.set_xlabel('Episode')
-        ax2.set_ylabel('Mean Thrust Coefficient')
-        ax2.set_title('Mean Thrust Coefficient over Episodes')
+        ax2.set_ylabel('Mean Total Ct')
+        ax2.set_title('Mean Total Ct over Episodes')
         ax2.grid(True)
         ax2.legend()
 
@@ -401,8 +424,7 @@ class FlappingWingVisualizer:
         df = pd.DataFrame({
             'episode': episodes,
             'reward': history_data['rewards'],
-            'mean_ct': history_data['mean_cts'],
-            'mean_pf': history_data.get('mean_pfs', []),
+            'mean_total_ct': history_data['mean_total_cts'],
             'actor_loss': history_data['actor_losses'],
             'critic_loss': history_data['critic_losses']
         })

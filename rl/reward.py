@@ -24,13 +24,13 @@ class RewardFunction:
         self.beta_y = PHYSICS_CONFIG['heave_penalty_weight']     # 升沉位移惩罚权重
         self.beta_x = PHYSICS_CONFIG['inline_penalty_weight']    # 轴向位移惩罚权重
 
-    def calculate_reward(self, thrust: float, motion_params: Dict[str, dict],
+    def calculate_reward(self, total_ct: float, motion_params: Dict[str, dict],
                         action: np.ndarray) -> float:
         """
         计算当前状态和动作的奖励
 
         参数:
-            thrust_coefficient: 当前总推力系数 C_t（全部翼之和）
+            total_ct: 当前总推力系数 C_t（全部翼之和）
             motion_params: 运动参数字典，包含每个翼各自的参数
             action: 执行的动作
 
@@ -38,15 +38,15 @@ class RewardFunction:
             reward: 总奖励值
         """
         # # 1. 推力奖励：最大化总推力系数，但不超过基准值
-        # if thrust_coefficient < -self.C_t_set:
+        # if total_ct < -self.C_t_set:
         #     thrust_reward = -self.C_t_set
-        # elif thrust_coefficient > self.C_t_set:
+        # elif total_ct > self.C_t_set:
         #     thrust_reward = self.C_t_set
         # else:
-        #     thrust_reward = thrust_coefficient
+        #     thrust_reward = total_ct
 
-        # 1. 推力效率奖励：最大化推力效率
-        efficiency_reward = thrust
+        # 1. 推力奖励：最大化总推力系数
+        thrust_reward = total_ct
 
         # 2. 稳定性惩罚
 
@@ -81,17 +81,17 @@ class RewardFunction:
                     penalty -= 0.01 * inline_pos ** 9
 
         # 3. 计算总奖励
-        total_reward = efficiency_reward + penalty
+        total_reward = thrust_reward + penalty
 
         return float(total_reward)
 
-    def get_reward_info(self, thrust_coefficient: float, motion_params: Dict[str, dict],
+    def get_reward_info(self, total_ct: float, motion_params: Dict[str, dict],
                        action: np.ndarray) -> Dict[str, float]:
         """
         获取奖励计算的详细信息
 
         参数:
-            thrust_coefficient: 当前总推力系数 C_t
+            total_ct: 当前总推力系数 C_t
             motion_params: 运动参数字典，前后翼各自的参数
             action: 执行的动作
 
@@ -101,12 +101,12 @@ class RewardFunction:
         info = {}
 
         # 1. 推力奖励
-        if thrust_coefficient < -self.C_t_set:
+        if total_ct < -self.C_t_set:
             thrust_reward = -self.C_t_set
-        elif thrust_coefficient > self.C_t_set:
+        elif total_ct > self.C_t_set:
             thrust_reward = self.C_t_set
         else:
-            thrust_reward = thrust_coefficient
+            thrust_reward = total_ct
         info['thrust_reward'] = float(thrust_reward)
 
         # 2. 运动惩罚

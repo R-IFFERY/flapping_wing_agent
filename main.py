@@ -125,12 +125,11 @@ def main():
     best_reward = float('-inf')
     best_episode = -1
     episode_rewards = []
-    episode_pfs = []
+    episode_total_cts = []
     # 添加用于记录训练历史的列表
     history_data = {
         'rewards': [],
-        'mean_cts': [],
-        'mean_pfs': [],
+        'mean_total_cts': [],
         'actor_losses': [],
         'critic_losses': [],
     }
@@ -143,11 +142,21 @@ def main():
 
             state = env.reset()
             episode_reward = 0
-            episode_pf = []
-            episode_ct = []
+            episode_total_ct = []
 
             # 记录初始状态，动作值为零
-            visualizer.update(state=state, flow_data=None, reward=0, step=0, action=np.zeros(action_dim), ct1=0, ct2=0, cp1=0, cp2=0, pf=0, stab=0)
+            visualizer.update(
+                state=state,
+                flow_data=None,
+                reward=0,
+                step=0,
+                action=np.zeros(action_dim),
+                wing_cts=[0.0] * env.wing_count,
+                wing_cps=[0.0] * env.wing_count,
+                wing_cls=[0.0] * env.wing_count,
+                total_ct=0,
+                stab=0,
+            )
 
             while True:
                 # 智能体选择动作并获取value值
@@ -175,8 +184,7 @@ def main():
                 # 更新状态和统计信息
                 state = next_state
                 episode_reward += reward
-                episode_pf.append(info['power_factor'])
-                episode_ct.append(info['thrust_coefficient'])
+                episode_total_ct.append(info['total_ct'])
 
                 if done:
                     break
@@ -185,15 +193,13 @@ def main():
             actor_loss, critic_loss = agent.update()
 
             # 记录本回合的数据
-            mean_pf = np.mean(episode_pf)
-            mean_ct = np.mean(episode_ct)
-            episode_pfs.append(mean_pf)
+            mean_total_ct = np.mean(episode_total_ct)
+            episode_total_cts.append(mean_total_ct)
             episode_rewards.append(episode_reward)
 
             # 记录训练历史数据
             history_data['rewards'].append(episode_reward)
-            history_data['mean_cts'].append(mean_ct)
-            history_data['mean_pfs'].append(mean_pf)
+            history_data['mean_total_cts'].append(mean_total_ct)
             history_data['actor_losses'].append(actor_loss)
             history_data['critic_losses'].append(critic_loss)
 
@@ -201,7 +207,7 @@ def main():
             visualizer.save_episode_summary(episode)
 
             # 打印训练信息
-            print(f"回合 {episode}/{TRAINING_CONFIG['num_episodes']} - 奖励: {episode_reward:.2f}, 平均推力效率: {mean_pf:.2f}")
+            print(f"回合 {episode}/{TRAINING_CONFIG['num_episodes']} - 奖励: {episode_reward:.2f}, 平均总推力系数: {mean_total_ct:.2f}")
 
             # 如果是最佳回合，保存模型和生成动画
             if episode_reward > best_reward:
@@ -218,7 +224,7 @@ def main():
     print(f"\n训练完成！")
     print(f"最佳回合: {best_episode}")
     print(f"最佳奖励: {best_reward:.2f}")
-    print(f"最终平均推力效率: {episode_pfs[-1]:.2f}")
+    print(f"最终平均总推力系数: {episode_total_cts[-1]:.2f}")
 
     # 绘制训练历史曲线
     visualizer.plot_training_history(history_data)

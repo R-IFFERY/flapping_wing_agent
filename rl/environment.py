@@ -19,6 +19,7 @@ class FlappingWingEnv(gym.Env):
         self.zmq_action_mode = self.zmq_config.get('action_mode', 'dof')
         self.zmq_motion_axis_2dof = self.zmq_config.get('motion_axis_2dof', 'sb')
         self.zmq_warmup_time = float(self.zmq_config.get('warmup_time', 0.0) or 0.0)
+        self.safety_shield_config = self.zmq_config.get('safety_shield', {})
         self.max_angle = PHYSICS_CONFIG['max_angle']
         self.max_displacement = PHYSICS_CONFIG['max_displacement']
         self.cfd_time_offset = 0.0
@@ -28,6 +29,7 @@ class FlappingWingEnv(gym.Env):
         self.save_dir = save_dir
         self.current_episode = 0
         self.last_total_cl = 0.0
+        self.current_zmq_motion = None
 
         # 为气动数据创建专门的保存目录
         if self.save_dir:
@@ -84,7 +86,8 @@ class FlappingWingEnv(gym.Env):
         self.current_step += 1
         action = np.array(action, dtype=float).reshape(-1)
         target_time = self._target_time_for_step(self.current_step)
-        control_values = self._action_to_zmq_controls(action)
+        raw_control_values = self._action_to_zmq_controls(action)
+        control_values, safety_shield_active = self._apply_zmq_safety_shield(raw_control_values)
 
         result = self.aerodynamics.step_zmq(
             target_time=target_time,
@@ -99,18 +102,9 @@ class FlappingWingEnv(gym.Env):
         cls = result["cls"]
         cts = result["cts"]
         cps = result["cps"]
-        cl1 = cls[0] if len(cls) > 0 else 0.0
-        cl2 = cls[1] if len(cls) > 1 else 0.0
-        ct1 = cts[0] if len(cts) > 0 else 0.0
-        ct2 = cts[1] if len(cts) > 1 else 0.0
-        cp1 = cps[0] if len(cps) > 0 else 0.0
-        cp2 = cps[1] if len(cps) > 1 else 0.0
-        pf = result["pf"]
-        total_ct = float(sum(cts))
+        total_ct = result["total_ct"]
         total_cp = float(sum(cps))
         forces = result["forces"]
-        forces1 = forces[0] if len(forces) > 0 else np.zeros(2)
-        forces2 = forces[1] if len(forces) > 1 else np.zeros(2)
 
         stab = 0.0
         if self.current_step > 1:
@@ -120,11 +114,18 @@ class FlappingWingEnv(gym.Env):
 
         motion_params = self._get_motion_params(current_state)
         reached_boundary = not self._is_zmq_motion_valid(response["motion_last"])
-        reward = -55 if reached_boundary else self.reward_function.calculate_reward(
-            pf, motion_params, action)
+        reward = -500.0 if reached_boundary else self.reward_function.calculate_reward(
+            total_ct, motion_params, action)
 
         if self.visualizer is not None:
-            self.visualizer.update(current_state, None, reward, self.current_step, action, ct1, ct2, cp1, cp2, pf, stab)
+            self.visualizer.update(
+                current_state, None, reward, self.current_step, action,
+                wing_cts=cts,
+                wing_cps=cps,
+                wing_cls=cls,
+                total_ct=total_ct,
+                stab=stab,
+            )
 
         done = reached_boundary or self.current_step >= self.max_steps
         termination_reason = None
@@ -135,22 +136,22 @@ class FlappingWingEnv(gym.Env):
                 termination_reason = "达到最大步数"
 
         info = {
-            'thrust_coefficient': total_ct,
+            'total_ct': total_ct,
             'wing_count': self.wing_count,
+            'wings': [
+                {
+                    'ct': cts[idx],
+                    'cl': cls[idx],
+                    'cp': cps[idx],
+                    'forces': forces[idx],
+                }
+                for idx in range(self.wing_count)
+            ],
             'wing_cts': cts,
             'wing_cls': cls,
             'wing_cps': cps,
             'wing_forces': forces,
-            'wing1_ct': ct1,
-            'wing2_ct': ct2,
-            'wing1_cl': cl1,
-            'wing2_cl': cl2,
-            'wing1_cp': cp1,
-            'wing2_cp': cp2,
-            'power_factor': pf,
             'stable': stab,
-            'wing1_forces': forces1,
-            'wing2_forces': forces2,
             'total_power_coefficient': total_cp,
             'is_valid': not reached_boundary,
             'simulation_time': self.simulation_time,
@@ -160,6 +161,8 @@ class FlappingWingEnv(gym.Env):
             'cfd_response': response,
             'flow_save_response': result.get("save_response"),
             'zmq_control_values': control_values,
+            'zmq_control_values_raw': raw_control_values,
+            'safety_shield_active': safety_shield_active,
         }
         return current_state, reward, done, info
 
@@ -196,6 +199,48 @@ class FlappingWingEnv(gym.Env):
                 raise ValueError(f"3dof action length must be {expected}, got {len(scaled)}")
             controls[:] = scaled
         return controls.tolist()
+
+    def _apply_zmq_safety_shield(self, control_values):
+        """裁剪会让下一步预测位置越过安全边界的速度增量。"""
+        if not self.safety_shield_config.get('enabled', True):
+            return list(control_values), False
+        if self.current_zmq_motion is None:
+            return list(control_values), False
+
+        dt = PHYSICS_CONFIG['action_interval']
+        max_increment = PHYSICS_CONFIG['max_velocity_increment']
+        guard_ratio = float(self.safety_shield_config.get('guard_ratio', 0.95))
+        guard_ratio = float(np.clip(guard_ratio, 0.0, 1.0))
+
+        controls = np.array(control_values, dtype=float).reshape(-1)
+        original_controls = controls.copy()
+        axes = [
+            ('angle', 'omega', self.max_angle * guard_ratio, 0),
+            ('sa', 'sau', self.max_displacement * guard_ratio, 1),
+            ('sb', 'sbv', self.max_displacement * guard_ratio, 2),
+        ]
+
+        for wing_idx, wing_motion in enumerate(self.current_zmq_motion):
+            control_base = 3 * wing_idx
+            for pos_key, vel_key, limit, control_offset in axes:
+                control_idx = control_base + control_offset
+                pos = float(wing_motion[pos_key])
+                vel = float(wing_motion[vel_key])
+
+                min_delta = (-limit - pos) / dt - vel
+                max_delta = (limit - pos) / dt - vel
+
+                lower = max(-max_increment, min_delta)
+                upper = min(max_increment, max_delta)
+                if lower <= upper:
+                    controls[control_idx] = np.clip(controls[control_idx], lower, upper)
+                elif max_delta < -max_increment:
+                    controls[control_idx] = -max_increment
+                elif min_delta > max_increment:
+                    controls[control_idx] = max_increment
+
+        safety_shield_active = bool(np.any(np.abs(controls - original_controls) > 1e-12))
+        return controls.tolist(), safety_shield_active
 
     def _target_time_for_step(self, step):
         target_time = self.cfd_time_offset + step * PHYSICS_CONFIG['action_interval']
@@ -239,6 +284,7 @@ class FlappingWingEnv(gym.Env):
 
     def _state_from_zmq_response(self, response):
         motion = response["motion_last"]
+        self.current_zmq_motion = [dict(wing_motion) for wing_motion in motion]
         current = self._current_state_from_zmq_motion(motion)
         state = np.concatenate([current, self.previous_cfd_current_state])
         self.previous_cfd_current_state = current.copy()

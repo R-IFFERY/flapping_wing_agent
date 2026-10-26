@@ -67,6 +67,12 @@ ENV_CONFIG = {
         'action_mode': 'dof',
         # dof_mode=2dof 时，选择 sb 或 sa 作为升沉自由度，另一个自由度速度增量补0
         'motion_axis_2dof': 'sb',
+        # 动作安全保护：发给 CFD 前根据当前位移/速度预测下一步，裁剪会继续越界的速度增量
+        'safety_shield': {
+            'enabled': True,
+            # 使用物理边界的 95% 作为保护边界，给 CFD 收敛留出余量
+            'guard_ratio': 0.95,
+        },
         'flow_save': {
             'enabled': True,
             # 例如 enabled=True, episode_interval=10, step_interval=20 表示每10个回合每20步保存一次流场

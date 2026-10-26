@@ -131,12 +131,15 @@ class AerodynamicsModel:
         return result
 
     def _coefficients_from_zmq_force(self, response, control_values):
-        """Convert a FORCE response to the legacy force/coefficient tuple."""
+        """Convert a FORCE response to the legacy coefficient tuple.
+
+        CFD returns already-normalized coefficients:
+        fx_avg = negative thrust coefficient, fy_avg = lift coefficient,
+        m_avg = moment coefficient. Do not normalize them again in Python.
+        """
         wing_force = response["wing_force"]
         total_force = response["total_force"]
         motion = response["motion_last"]
-        q = 0.5 * self.rou * self.U0 ** 2 * self.c
-        p_den = 0.5 * self.rou * self.c * self.U0 ** 3
 
         fxs = []
         fys = []
@@ -145,38 +148,36 @@ class AerodynamicsModel:
         cls = []
         cps = []
         powers = []
-        pfs = []
 
         for idx in range(self.wing_count):
-            fx = wing_force[idx]["fx_avg"]
-            fy = wing_force[idx]["fy_avg"]
-            torque = wing_force[idx]["m_avg"]
-            fxs.append(fx)
-            fys.append(fy)
-            torques.append(torque)
+            negative_ct = wing_force[idx]["fx_avg"]
+            cl = wing_force[idx]["fy_avg"]
+            cm = wing_force[idx]["m_avg"]
+            ct = -negative_ct
 
-            if q == 0:
-                ct = cl = 0.0
-            else:
-                ct = fx / q
-                cl = fy / q
+            fxs.append(negative_ct)
+            fys.append(cl)
+            torques.append(cm)
             cts.append(ct)
             cls.append(cl)
 
-            power = fx * motion[idx]["sau"] + fy * motion[idx]["sbv"] + torque * motion[idx]["omega"]
+            power = (
+                negative_ct * motion[idx]["sau"]
+                + cl * motion[idx]["sbv"]
+                + cm * motion[idx]["omega"]
+            )
             powers.append(power)
-            cp = 0.0 if p_den == 0 else max(min(power / p_den, 20.0), -20.0)
+            cp = max(min(power, 20.0), -20.0)
             cps.append(cp)
-            pfs.append(0.0 if cp == 0 else ct / cp)
 
-        Pf = float(sum(cts))
+        total_ct = float(sum(cts))
 
         data = {
             'cfd_time': response['time'],
             'total_Fx': total_force['fx_avg'],
             'total_Fy': total_force['fy_avg'],
             'total_M': total_force['m_avg'],
-            'Pf': Pf,
+            'total_ct': total_ct,
             'density': self.rou,
             'chord_length': self.c,
             'freestream_velocity': self.U0,
@@ -189,52 +190,41 @@ class AerodynamicsModel:
         }
 
         for idx in range(self.wing_count):
-            wing_no = idx + 1
             data.update({
-                f'theta{wing_no}': motion[idx]['angle'],
-                f'omega{wing_no}': motion[idx]['omega'],
-                f'alpha{wing_no}': motion[idx]['omgac'],
-                f'sa{wing_no}': motion[idx]['sa'],
-                f'sau{wing_no}': motion[idx]['sau'],
-                f'saac{wing_no}': motion[idx]['saac'],
-                f'sb{wing_no}': motion[idx]['sb'],
-                f'sbv{wing_no}': motion[idx]['sbv'],
-                f'sbac{wing_no}': motion[idx]['sbac'],
-                f'v_x{wing_no}': motion[idx]['sau'],
-                f'v_y{wing_no}': motion[idx]['sbv'],
-                f'a_x{wing_no}': motion[idx]['saac'],
-                f'a_y{wing_no}': motion[idx]['sbac'],
-                f'Fx{wing_no}': fxs[idx],
-                f'Fy{wing_no}': fys[idx],
-                f'M{wing_no}': torques[idx],
-                f'T{wing_no}': fxs[idx],
-                f'Ct{wing_no}': cts[idx],
-                f'P{wing_no}': powers[idx],
-                f'Cp{wing_no}': cps[idx],
-                f'Pf{wing_no}': pfs[idx],
-                f'Cl{wing_no}': cls[idx],
-                f'control_w{wing_no}_domega': control_values[3 * idx],
-                f'control_w{wing_no}_dsau': control_values[3 * idx + 1],
-                f'control_w{wing_no}_dsbv': control_values[3 * idx + 2],
+                f'wing[{idx}]_theta': motion[idx]['angle'],
+                f'wing[{idx}]_omega': motion[idx]['omega'],
+                f'wing[{idx}]_alpha': motion[idx]['omgac'],
+                f'wing[{idx}]_sa': motion[idx]['sa'],
+                f'wing[{idx}]_sau': motion[idx]['sau'],
+                f'wing[{idx}]_saac': motion[idx]['saac'],
+                f'wing[{idx}]_sb': motion[idx]['sb'],
+                f'wing[{idx}]_sbv': motion[idx]['sbv'],
+                f'wing[{idx}]_sbac': motion[idx]['sbac'],
+                f'wing[{idx}]_v_x': motion[idx]['sau'],
+                f'wing[{idx}]_v_y': motion[idx]['sbv'],
+                f'wing[{idx}]_a_x': motion[idx]['saac'],
+                f'wing[{idx}]_a_y': motion[idx]['sbac'],
+                f'wing[{idx}]_Fx': fxs[idx],
+                f'wing[{idx}]_Fy': fys[idx],
+                f'wing[{idx}]_M': torques[idx],
+                f'wing[{idx}]_T': fxs[idx],
+                f'wing[{idx}]_Ct': cts[idx],
+                f'wing[{idx}]_P': powers[idx],
+                f'wing[{idx}]_Cp': cps[idx],
+                f'wing[{idx}]_Cl': cls[idx],
+                f'wing[{idx}]_control_domega': control_values[3 * idx],
+                f'wing[{idx}]_control_dsau': control_values[3 * idx + 1],
+                f'wing[{idx}]_control_dsbv': control_values[3 * idx + 2],
             })
 
         forces = [np.array([fxs[idx], fys[idx]]) for idx in range(self.wing_count)]
-        zero_force = np.zeros(2)
         return {
             "forces": forces,
             "cls": cls,
             "cts": cts,
             "cps": cps,
             "powers": powers,
-            "forces1": forces[0] if self.wing_count >= 1 else zero_force,
-            "cl1": cls[0] if self.wing_count >= 1 else 0.0,
-            "ct1": cts[0] if self.wing_count >= 1 else 0.0,
-            "cp1": cps[0] if self.wing_count >= 1 else 0.0,
-            "forces2": forces[1] if self.wing_count >= 2 else zero_force,
-            "cl2": cls[1] if self.wing_count >= 2 else 0.0,
-            "ct2": cts[1] if self.wing_count >= 2 else 0.0,
-            "cp2": cps[1] if self.wing_count >= 2 else 0.0,
-            "pf": Pf,
+            "total_ct": total_ct,
             "data": data,
             "response": response,
         }
